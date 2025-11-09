@@ -177,3 +177,6 @@ Private - All Rights Reserved
 ---
 
 **OneFlow** - Streamline Your Project Management
+
+Video Qick View
+https://drive.google.com/file/d/1pepwoPlalYIkgXgTUaWM0YvVHhn7r_w0/view?usp=sharing
