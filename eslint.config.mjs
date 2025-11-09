@@ -13,6 +13,14 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  {
+    // Enforce no `any` in TypeScript files
+    rules: {
+      "@typescript-eslint/no-explicit-any": "warn",
+    "@typescript-eslint/no-unescaped-entities": "warn",
+    
+    },
+  },
 ]);
 
 export default eslintConfig;

@@ -1,0 +1,946 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USER MANAGEMENT & AUTHENTICATION
+// ============================================
+
+enum UserRole {
+  ADMIN
+  PROJECT_MANAGER
+  TEAM_MEMBER
+  SALES_FINANCE
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+model User {
+  id        Int        @id @default(autoincrement())
+  clerkId   String     @unique
+  email     String     @unique
+  firstName String
+  lastName  String
+  phone     String?
+  avatar    String?
+  role      UserRole   @default(TEAM_MEMBER)
+  status    UserStatus @default(ACTIVE)
+
+  // Hourly rate for timesheet cost calculation
+  hourlyRate Decimal @default(0) @db.Decimal(10, 2)
+
+  // Metadata
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  lastLogin DateTime?
+
+  // Relations
+  projectMemberships ProjectMember[]
+  assignedTasks      Task[]
+  timesheets         Timesheet[]
+  expenses           Expense[]
+  comments           Comment[]
+  notifications      Notification[]
+  activityLogs       ActivityLog[]
+
+  managedProjects Project[] @relation("ProjectManager")
+
+  @@index([clerkId])
+  @@index([email])
+  @@index([role])
+  @@index([status])
+  @@map("users")
+}
+
+// ============================================
+// PROJECT MANAGEMENT
+// ============================================
+
+enum ProjectStatus {
+  PLANNED
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum ProjectType {
+  FIXED_PRICE
+  TIME_AND_MATERIAL
+  RETAINER
+}
+
+model Project {
+  id          Int     @id @default(autoincrement())
+  name        String
+  description String? @db.Text
+  code        String  @unique // Project code like "PRJ-001"
+  // Binary cover image stored as bytes (Postgres bytea)
+  coverImage  Bytes?
+
+  // Project details
+  type     ProjectType   @default(FIXED_PRICE)
+  status   ProjectStatus @default(PLANNED)
+  priority Int           @default(3) // 1-5 scale
+
+  // Dates
+  startDate     DateTime?
+  endDate       DateTime?
+  actualEndDate DateTime?
+
+  // Budget & Financial
+  budgetAmount     Decimal @default(0) @db.Decimal(15, 2)
+  budgetHours      Decimal @default(0) @db.Decimal(10, 2)
+  estimatedCost    Decimal @default(0) @db.Decimal(15, 2)
+  estimatedRevenue Decimal @default(0) @db.Decimal(15, 2)
+
+  // Progress tracking
+  progressPercentage Int @default(0) // 0-100
+
+  // Manager
+  projectManagerId Int
+
+  // Metadata
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? // Soft delete
+
+  // Relations
+  members          ProjectMember[]
+  tasks            Task[]
+  salesOrders      SalesOrder[]
+  purchaseOrders   PurchaseOrder[]
+  customerInvoices CustomerInvoice[]
+  vendorBills      VendorBill[]
+  expenses         Expense[]
+  timesheets       Timesheet[]
+  milestones       Milestone[]
+  notifications    Notification[]
+  activityLogs     ActivityLog[]
+
+  projectManager User @relation("ProjectManager", fields: [projectManagerId], references: [id], onDelete: Restrict)
+
+  @@index([code])
+  @@index([status])
+  @@index([projectManagerId])
+  @@index([startDate])
+  @@index([endDate])
+  @@index([deletedAt])
+  @@map("projects")
+}
+
+model ProjectMember {
+  id        Int    @id @default(autoincrement())
+  projectId Int
+  userId    Int
+  role      String @default("Team Member") // Custom role within project
+
+  // Allocation
+  allocationPercentage Int     @default(100) // % of time allocated to this project
+  hourlyRate           Decimal @default(0) @db.Decimal(10, 2)
+
+  joinedAt DateTime  @default(now())
+  leftAt   DateTime?
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([projectId])
+  @@index([userId])
+  @@map("project_members")
+}
+
+model Milestone {
+  id          Int     @id @default(autoincrement())
+  projectId   Int
+  name        String
+  description String? @db.Text
+
+  dueDate     DateTime
+  completedAt DateTime?
+
+  amount Decimal @default(0) @db.Decimal(15, 2) // Revenue milestone
+
+  status String @default("PENDING") // PENDING, COMPLETED
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([dueDate])
+  @@map("milestones")
+}
+
+// ============================================
+// TASK MANAGEMENT
+// ============================================
+
+enum TaskStatus {
+  NEW
+  IN_PROGRESS
+  BLOCKED
+  DONE
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Task {
+  id          Int     @id @default(autoincrement())
+  projectId   Int
+  title       String
+  description String? @db.Text
+
+  // Assignment
+  assignedToId Int?
+  assignedBy   Int
+
+  // Status & Priority
+  status   TaskStatus   @default(NEW)
+  priority TaskPriority @default(MEDIUM)
+
+  // Dates
+  startDate   DateTime?
+  dueDate     DateTime?
+  completedAt DateTime?
+
+  // Estimates
+  estimatedHours Decimal @default(0) @db.Decimal(10, 2)
+  actualHours    Decimal @default(0) @db.Decimal(10, 2)
+
+  // Blocking info
+  blockReason String?   @db.Text
+  blockedAt   DateTime?
+
+  // Order in list
+  sortOrder Int @default(0)
+
+  // Metadata
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  // Relations
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignedTo  User?        @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
+  timesheets  Timesheet[]
+  comments    Comment[]
+  attachments Attachment[]
+
+  @@index([projectId])
+  @@index([assignedToId])
+  @@index([status])
+  @@index([priority])
+  @@index([dueDate])
+  @@index([deletedAt])
+  @@map("tasks")
+}
+
+model Comment {
+  id      Int    @id @default(autoincrement())
+  taskId  Int
+  userId  Int
+  content String @db.Text
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("comments")
+}
+
+model Attachment {
+  id         Int    @id @default(autoincrement())
+  taskId     Int
+  fileName   String
+  fileUrl    String
+  fileSize   Int // in bytes
+  mimeType   String
+  uploadedBy Int
+
+  createdAt DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@map("attachments")
+}
+
+// ============================================
+// TIMESHEET MANAGEMENT
+// ============================================
+
+enum TimesheetStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  BILLED
+}
+
+model Timesheet {
+  id        Int  @id @default(autoincrement())
+  projectId Int
+  taskId    Int?
+  userId    Int
+
+  // Time tracking
+  date        DateTime @db.Date
+  hours       Decimal  @db.Decimal(5, 2)
+  description String?  @db.Text
+
+  // Billing
+  isBillable Boolean         @default(true)
+  status     TimesheetStatus @default(DRAFT)
+
+  // Cost calculation
+  hourlyRate Decimal @db.Decimal(10, 2) // Snapshot of rate at time of entry
+  totalCost  Decimal @db.Decimal(10, 2) // hours * hourlyRate
+
+  // Approval
+  approvedBy     Int?
+  approvedAt     DateTime?
+  rejectedReason String?   @db.Text
+
+  // Invoice linking
+  invoiceId     Int?
+  invoiceLineId Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  task    Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([taskId])
+  @@index([userId])
+  @@index([date])
+  @@index([status])
+  @@index([isBillable])
+  @@map("timesheets")
+}
+
+// ============================================
+// SALES & CUSTOMER MANAGEMENT
+// ============================================
+
+enum PartnerType {
+  CUSTOMER
+  VENDOR
+  BOTH
+}
+
+model Partner {
+  id      Int         @id @default(autoincrement())
+  name    String
+  type    PartnerType
+  email   String?
+  phone   String?
+  address String?     @db.Text
+
+  // Tax info
+  taxId String?
+
+  // Payment terms
+  paymentTermDays Int @default(30)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  salesOrders      SalesOrder[]
+  purchaseOrders   PurchaseOrder[]
+  customerInvoices CustomerInvoice[]
+  vendorBills      VendorBill[]
+
+  @@index([type])
+  @@index([name])
+  @@map("partners")
+}
+
+enum SalesOrderStatus {
+  DRAFT
+  SENT
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model SalesOrder {
+  id          Int    @id @default(autoincrement())
+  orderNumber String @unique // SO-001
+
+  projectId  Int
+  customerId Int
+
+  // Order details
+  orderDate     DateTime  @default(now())
+  validUntil    DateTime?
+  confirmedDate DateTime?
+
+  status SalesOrderStatus @default(DRAFT)
+
+  // Financial
+  subtotal       Decimal @db.Decimal(15, 2)
+  taxAmount      Decimal @default(0) @db.Decimal(15, 2)
+  discountAmount Decimal @default(0) @db.Decimal(15, 2)
+  totalAmount    Decimal @db.Decimal(15, 2)
+
+  // Terms
+  paymentTerms  String? @db.Text
+  deliveryTerms String? @db.Text
+  notes         String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project  Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  customer Partner @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  lines    SalesOrderLine[]
+  invoices CustomerInvoice[]
+
+  @@index([projectId])
+  @@index([customerId])
+  @@index([orderNumber])
+  @@index([status])
+  @@index([orderDate])
+  @@map("sales_orders")
+}
+
+model SalesOrderLine {
+  id           Int @id @default(autoincrement())
+  salesOrderId Int
+
+  description  String
+  quantity     Decimal @db.Decimal(10, 2)
+  unitPrice    Decimal @db.Decimal(10, 2)
+  taxRate      Decimal @default(0) @db.Decimal(5, 2)
+  discountRate Decimal @default(0) @db.Decimal(5, 2)
+
+  subtotal    Decimal @db.Decimal(15, 2)
+  totalAmount Decimal @db.Decimal(15, 2)
+
+  sortOrder Int @default(0)
+
+  salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+
+  @@index([salesOrderId])
+  @@map("sales_order_lines")
+}
+
+// ============================================
+// PURCHASE & VENDOR MANAGEMENT
+// ============================================
+
+enum PurchaseOrderStatus {
+  DRAFT
+  SENT
+  CONFIRMED
+  RECEIVED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id          Int    @id @default(autoincrement())
+  orderNumber String @unique // PO-001
+
+  projectId Int
+  vendorId  Int
+
+  // Order details
+  orderDate    DateTime  @default(now())
+  expectedDate DateTime?
+  receivedDate DateTime?
+
+  status PurchaseOrderStatus @default(DRAFT)
+
+  // Financial
+  subtotal    Decimal @db.Decimal(15, 2)
+  taxAmount   Decimal @default(0) @db.Decimal(15, 2)
+  totalAmount Decimal @db.Decimal(15, 2)
+
+  // Terms
+  paymentTerms    String? @db.Text
+  deliveryAddress String? @db.Text
+  notes           String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  vendor  Partner @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+
+  lines PurchaseOrderLine[]
+  bills VendorBill[]
+
+  @@index([projectId])
+  @@index([vendorId])
+  @@index([orderNumber])
+  @@index([status])
+  @@index([orderDate])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderLine {
+  id              Int @id @default(autoincrement())
+  purchaseOrderId Int
+
+  description String
+  quantity    Decimal @db.Decimal(10, 2)
+  unitPrice   Decimal @db.Decimal(10, 2)
+  taxRate     Decimal @default(0) @db.Decimal(5, 2)
+
+  subtotal    Decimal @db.Decimal(15, 2)
+  totalAmount Decimal @db.Decimal(15, 2)
+
+  sortOrder Int @default(0)
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  @@index([purchaseOrderId])
+  @@map("purchase_order_lines")
+}
+
+// ============================================
+// INVOICING & BILLING
+// ============================================
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+model CustomerInvoice {
+  id            Int    @id @default(autoincrement())
+  invoiceNumber String @unique // INV-001
+
+  projectId    Int
+  customerId   Int
+  salesOrderId Int?
+
+  // Invoice details
+  invoiceDate DateTime  @default(now())
+  dueDate     DateTime
+  paidDate    DateTime?
+
+  status InvoiceStatus @default(DRAFT)
+
+  // Financial
+  subtotal       Decimal @db.Decimal(15, 2)
+  taxAmount      Decimal @default(0) @db.Decimal(15, 2)
+  discountAmount Decimal @default(0) @db.Decimal(15, 2)
+  totalAmount    Decimal @db.Decimal(15, 2)
+  paidAmount     Decimal @default(0) @db.Decimal(15, 2)
+  balanceAmount  Decimal @db.Decimal(15, 2)
+
+  // Terms & Notes
+  paymentTerms String? @db.Text
+  notes        String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project    Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  customer   Partner     @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  salesOrder SalesOrder? @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+
+  lines    CustomerInvoiceLine[]
+  payments Payment[]
+
+  @@index([projectId])
+  @@index([customerId])
+  @@index([salesOrderId])
+  @@index([invoiceNumber])
+  @@index([status])
+  @@index([invoiceDate])
+  @@index([dueDate])
+  @@map("customer_invoices")
+}
+
+model CustomerInvoiceLine {
+  id                Int @id @default(autoincrement())
+  customerInvoiceId Int
+
+  description  String
+  quantity     Decimal @db.Decimal(10, 2)
+  unitPrice    Decimal @db.Decimal(10, 2)
+  taxRate      Decimal @default(0) @db.Decimal(5, 2)
+  discountRate Decimal @default(0) @db.Decimal(5, 2)
+
+  subtotal    Decimal @db.Decimal(15, 2)
+  totalAmount Decimal @db.Decimal(15, 2)
+
+  // Link to timesheet or expense
+  timesheetId Int?
+  expenseId   Int?
+
+  sortOrder Int @default(0)
+
+  customerInvoice CustomerInvoice @relation(fields: [customerInvoiceId], references: [id], onDelete: Cascade)
+
+  @@index([customerInvoiceId])
+  @@index([timesheetId])
+  @@index([expenseId])
+  @@map("customer_invoice_lines")
+}
+
+enum BillStatus {
+  DRAFT
+  RECEIVED
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+}
+
+model VendorBill {
+  id              Int     @id @default(autoincrement())
+  billNumber      String  @unique // BILL-001
+  vendorReference String? // Vendor's invoice number
+
+  projectId       Int
+  vendorId        Int
+  purchaseOrderId Int?
+
+  // Bill details
+  billDate DateTime  @default(now())
+  dueDate  DateTime
+  paidDate DateTime?
+
+  status BillStatus @default(DRAFT)
+
+  // Financial
+  subtotal      Decimal @db.Decimal(15, 2)
+  taxAmount     Decimal @default(0) @db.Decimal(15, 2)
+  totalAmount   Decimal @db.Decimal(15, 2)
+  paidAmount    Decimal @default(0) @db.Decimal(15, 2)
+  balanceAmount Decimal @db.Decimal(15, 2)
+
+  // Notes
+  notes String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  vendor        Partner        @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+
+  lines    VendorBillLine[]
+  payments Payment[]
+
+  @@index([projectId])
+  @@index([vendorId])
+  @@index([purchaseOrderId])
+  @@index([billNumber])
+  @@index([status])
+  @@index([billDate])
+  @@index([dueDate])
+  @@map("vendor_bills")
+}
+
+model VendorBillLine {
+  id           Int @id @default(autoincrement())
+  vendorBillId Int
+
+  description String
+  quantity    Decimal @db.Decimal(10, 2)
+  unitPrice   Decimal @db.Decimal(10, 2)
+  taxRate     Decimal @default(0) @db.Decimal(5, 2)
+
+  subtotal    Decimal @db.Decimal(15, 2)
+  totalAmount Decimal @db.Decimal(15, 2)
+
+  sortOrder Int @default(0)
+
+  vendorBill VendorBill @relation(fields: [vendorBillId], references: [id], onDelete: Cascade)
+
+  @@index([vendorBillId])
+  @@map("vendor_bill_lines")
+}
+
+// ============================================
+// PAYMENTS
+// ============================================
+
+enum PaymentType {
+  CUSTOMER_PAYMENT // Received from customer
+  VENDOR_PAYMENT // Paid to vendor
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CHECK
+  CREDIT_CARD
+  UPI
+  OTHER
+}
+
+model Payment {
+  id            Int    @id @default(autoincrement())
+  paymentNumber String @unique // PAY-001
+
+  type   PaymentType
+  method PaymentMethod @default(BANK_TRANSFER)
+
+  // Amount
+  amount      Decimal  @db.Decimal(15, 2)
+  paymentDate DateTime @default(now())
+
+  // References
+  customerInvoiceId Int?
+  vendorBillId      Int?
+
+  // Details
+  referenceNumber String? // Check number, transaction ID, etc.
+  notes           String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customerInvoice CustomerInvoice? @relation(fields: [customerInvoiceId], references: [id], onDelete: SetNull)
+  vendorBill      VendorBill?      @relation(fields: [vendorBillId], references: [id], onDelete: SetNull)
+
+  @@index([customerInvoiceId])
+  @@index([vendorBillId])
+  @@index([type])
+  @@index([paymentDate])
+  @@map("payments")
+}
+
+// ============================================
+// EXPENSES
+// ============================================
+
+enum ExpenseStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  REIMBURSED
+  BILLED
+}
+
+enum ExpenseCategory {
+  TRAVEL
+  MEALS
+  ACCOMMODATION
+  SUPPLIES
+  EQUIPMENT
+  SOFTWARE
+  OTHER
+}
+
+model Expense {
+  id            Int    @id @default(autoincrement())
+  expenseNumber String @unique // EXP-001
+
+  projectId Int
+  userId    Int // Who submitted
+
+  // Expense details
+  category    ExpenseCategory
+  description String
+  expenseDate DateTime        @db.Date
+  receipt     Bytes? // Receipt image
+
+  // Financial
+  amount      Decimal @db.Decimal(10, 2)
+  taxAmount   Decimal @default(0) @db.Decimal(10, 2)
+  totalAmount Decimal @db.Decimal(10, 2)
+
+  // Billing
+  isBillable       Boolean @default(false)
+  markupPercentage Decimal @default(0) @db.Decimal(5, 2)
+  billableAmount   Decimal @default(0) @db.Decimal(10, 2)
+
+  status ExpenseStatus @default(DRAFT)
+
+  // Approval
+  approvedBy     Int?
+  approvedAt     DateTime?
+  rejectedReason String?   @db.Text
+
+  // Reimbursement
+  reimbursedAt DateTime?
+
+  // Invoice linking
+  invoiceLineId Int?
+
+  // Receipt
+  receiptUrl String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([status])
+  @@index([category])
+  @@index([expenseDate])
+  @@index([isBillable])
+  @@map("expenses")
+}
+
+// ============================================
+// NOTIFICATIONS
+// ============================================
+
+enum NotificationType {
+  PROJECT_ASSIGNED
+  TASK_ASSIGNED
+  TASK_STATUS_CHANGED
+  TASK_DUE_SOON
+  TASK_OVERDUE
+  TIMESHEET_APPROVED
+  TIMESHEET_REJECTED
+  EXPENSE_APPROVED
+  EXPENSE_REJECTED
+  INVOICE_CREATED
+  INVOICE_PAID
+  BILL_CREATED
+  BILL_DUE
+  COMMENT_ADDED
+  MILESTONE_COMPLETED
+  PROJECT_STATUS_CHANGED
+  SYSTEM_ALERT
+}
+
+model Notification {
+  id     Int @id @default(autoincrement())
+  userId Int
+
+  type    NotificationType
+  title   String
+  message String           @db.Text
+
+  // Links
+  projectId Int?
+  taskId    Int?
+
+  // Additional data in JSON format
+  metadata Json?
+
+  // Status
+  isRead Boolean   @default(false)
+  readAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+  @@index([type])
+  @@map("notifications")
+}
+
+// ============================================
+// ACTIVITY LOG / AUDIT TRAIL
+// ============================================
+
+enum ActivityAction {
+  CREATE
+  UPDATE
+  DELETE
+  APPROVE
+  REJECT
+  SUBMIT
+  COMPLETE
+  CANCEL
+  RESTORE
+}
+
+enum ActivityEntity {
+  PROJECT
+  TASK
+  TIMESHEET
+  EXPENSE
+  SALES_ORDER
+  PURCHASE_ORDER
+  CUSTOMER_INVOICE
+  VENDOR_BILL
+  PAYMENT
+  COMMENT
+  USER
+}
+
+model ActivityLog {
+  id Int @id @default(autoincrement())
+
+  userId    Int
+  projectId Int?
+
+  entity   ActivityEntity
+  entityId Int
+  action   ActivityAction
+
+  // Changes tracking
+  changes Json? // Store before/after values
+
+  description String  @db.Text
+  ipAddress   String?
+  userAgent   String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([projectId])
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@index([action])
+  @@map("activity_logs")
+}
+
+// ============================================
+// SYSTEM SETTINGS (Optional but useful)
+// ============================================
+
+model SystemSetting {
+  id    Int    @id @default(autoincrement())
+  key   String @unique
+  value String @db.Text
+
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
